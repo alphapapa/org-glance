@@ -61,7 +61,7 @@ If buffer-or-name is nil return current buffer's mode."
   - if entry has an org-link in title, browse it
   - if entry has HANDLER property, read-eval it
 - HANDLER :: property name to read-eval on select (default: \"HANDLER\")
-- OUTLINE-PATH-IGNORE :: list of strings to ignore in outline-path
+- OUTLINE-IGNORE :: list of strings to ignore in outline-path
 
 - INPLACE :: do not build scope file if specified
 
@@ -70,9 +70,9 @@ If buffer-or-name is nil return current buffer's mode."
          (aggregated-scopes (org-glance--aggregate-scopes user-scopes))
 
          (user-filter (or (plist-get args :filter)       (lambda () t)))
-         (filter-predicates (org-glance--filter-predicates user-filter))
+         (filters (org-glance--filter-predicates user-filter))
 
-         (outline-path-ignore (or (plist-get args :outline-path-ignore) nil))
+         (outline-ignore (or (plist-get args :outline-ignore) nil))
 
          ;; user predicates
          (save-outline-visibility-p (or (plist-get args :save-outline-visibility-p) nil))
@@ -86,56 +86,61 @@ If buffer-or-name is nil return current buffer's mode."
          (entries (org-glance--entries
                    :scope aggregated-scopes
                    :separator separator
-                   :outline-path-ignore outline-path-ignore
-                   :filters filter-predicates
-                   :inplace inplace-p)))
+                   :outline-ignore outline-ignore
+                   :filters filters
+                   :inplace inplace-p))
+         (-> (assert entries nil (format "Nothing to glance for in scopes %s" (prin1-to-string aggregated-scopes)))))
 
-    (if entries
-        (unwind-protect
-            (org-glance/compl-map prompt entries action save-outline-visibility-p)
-          ;; (with-current-buffer (get-buffer-create org-glance--scope-buffer-name)
-          ;;   (erase-buffer)
-          ;;   (kill-buffer))
-          )
-      (message (format "Nothing to glance for in scopes %s" (prin1-to-string aggregated-scopes))))))
+    (unwind-protect
+        (org-glance/compl-map prompt entries action save-outline-visibility-p)
+      (with-current-buffer (get-buffer-create org-glance--scope-buffer-name)
+        (erase-buffer)
+        (kill-buffer)))))
 
 (defun org-glance--get-outline-path-and-marker-at-point (&rest args)
   "Return outline path of current `'org-mode`' entry.
 
 Org node titles separated by SEPARATOR, titles specified in
-OUTLINE-PATH-IGNORE will be ignored.
+OUTLINE-IGNORE will be ignored.
 
 All FILTERS lambdas must be t."
   (let* ((separator           (or (plist-get args :separator)           org-glance-defaults--separator))
-         (outline-path-ignore (or (plist-get args :outline-path-ignore) nil))
+         (outline-ignore (or (plist-get args :outline-ignore) nil))
          (filters             (or (plist-get args :filters)             nil))
 
          (mark (point-marker))
-         (item (org-entry-get (point-marker) "ITEM"))
+         ;; (item (org-entry-get (point-marker) "ITEM"))
+
          (outline (cl-set-difference
-                   (butlast (org-get-outline-path t))
-                   outline-path-ignore
+                   (org-get-outline-path t)
+                   outline-ignore
                    :test 'string=))
-         (item-outline (-snoc outline item))
-         (title (mapconcat 'identity item-outline separator)))
+
+         ;; (item-outline (-snoc outline item))
+         (title (mapconcat 'identity outline separator)))
     (when (cl-every (lambda (fp) (if fp (funcall fp) nil)) filters)
-      title)))
+      (list title mark))))
 
 (defun org-glance--entries (&rest args)
   "Return glance entries by SCOPE.
 
-Specify SEPARATOR and OUTLINE-PATH-IGNORE to customize
+Specify SEPARATOR and OUTLINE-IGNORE to customize
 outline-paths appearence.
 
 When INPLACE flag specified, do not modify *org-glance-scope* buffer.
 
 Add some FILTERS to filter unwanted entries."
-  (let* ((scope               (or (plist-get args :scope)               (error "Specify scope to get list of entries.")))
+  (let* ((scope               (or (plist-get args :scope)               nil))
+         (-> (assert scope nil "You must specify :scope argument."))
+         (-> (assert (listp scope) nil "Scope must be instance of list."))
+
          (separator           (or (plist-get args :separator)           org-glance-defaults--separator))
-         (outline-path-ignore (or (plist-get args :outline-path-ignore) nil))
+         (outline-ignore (or (plist-get args :outline-ignore) nil))
          (inplace-p           (or (plist-get args :inplace)             nil))
          (filters             (or (plist-get args :filters)             nil))
 
+         ;; Possible beautify and optimization: switch to opened buffer instead of finding file
+         ;; (live-buffers (remove nil (mapcar 'buffer-file-name (buffer-list))))
          (scope-type-getter (lambda (file-or-buffer)
                               (cond ((and (stringp file-or-buffer) (file-exists-p file-or-buffer)) 'file)
                                     ((and (bufferp file-or-buffer) (buffer-file-name file-or-buffer) (file-exists-p (buffer-file-name file-or-buffer))) 'file-buffer)
@@ -147,33 +152,54 @@ Add some FILTERS to filter unwanted entries."
                                 ('file-buffer (expand-file-name (buffer-file-name file-or-buffer)))
                                 ('buffer (buffer-name file-or-buffer)))))
 
+         (outliner (apply-partially
+                    'org-glance--get-outline-path-and-marker-at-point
+                    :separator separator
+                    :outline-ignore outline-ignore
+                    :filters filters))
+
          (implant (lambda (file-or-buffer scope-type)
-                    (case scope-type
-                      ('file (insert-file-contents file-or-buffer))
-                      ('file-buffer (insert-file-contents (buffer-file-name file-or-buffer)))
-                      ('buffer (insert-buffer-substring-no-properties file-or-buffer))))))
+                    ;; TODO: checkout if current entries already exist in org-glance-scope
+
+                    (let ((entries (with-temp-buffer
+                                     (org-mode)
+                                     (case scope-type
+                                       ('file (insert-file-contents file-or-buffer))
+                                       ('file-buffer (insert-file-contents (buffer-file-name file-or-buffer)))
+                                       ('buffer (insert-buffer-substring-no-properties file-or-buffer)))
+                                     (mapcar 'car (org-map-entries outliner))))
+
+                          (scope-name (funcall scope-name-getter file-or-buffer scope-type)))
+                      (with-current-buffer (get-buffer-create org-glance--scope-buffer-name)
+                        (org-mode)
+                        (loop for entry in entries
+                              initially (insert (format "* %s\n" scope-name))
+                              when entry
+                              do (insert (format " * %s\n" entry))
+                              finally (insert "\n"))))))
+
+         (visitor (lambda (file-or-buffer scope-type)
+                    (save-window-excursion
+                      (case scope-type
+                        ('file (find-file file-or-buffer))
+                        ('file-buffer (switch-to-buffer file-or-buffer))
+                        ('buffer (switch-to-buffer file-or-buffer)))
+                      (org-map-entries outliner))))
+
+         (handler (if inplace-p visitor implant)))
 
     (loop for file-or-buffer in scope
           with scope-type do (setq scope-type (funcall scope-type-getter file-or-buffer))
-          with scope-name do (setq scope-name (funcall scope-name-getter file-or-buffer scope-type))
-          with entries do (setq entries
-                                (with-temp-buffer
-                                  (org-mode)
-                                  (funcall implant file-or-buffer scope-type)
-                                  (loop for entry in
-                                        (org-map-entries
-                                         #'(lambda () (org-glance--get-outline-path-and-marker-at-point
-                                                  :separator separator
-                                                  :outline-path-ignore outline-path-ignore
-                                                  :filters filters)))
-                                        when entry collect entry)))
-          collect entries
+          append (funcall handler file-or-buffer scope-type)
+
+          ;; with scope-name do (setq scope-name (funcall scope-name-getter file-or-buffer scope-type))
 
           ;; with registered-scopes
           ;; do (setq registered-scopes
           ;;          (org-element-map
           ;;              (org-element-parse-buffer 'headline) 'headline
           ;;            (lambda (headline) (org-element-property :title headline))))
+          ;; collect registered-scopes
 
           ;; when (and (not (member scope-name registered-scopes))
           ;;           entries)
@@ -188,7 +214,7 @@ Add some FILTERS to filter unwanted entries."
 
   ;; (org-map-entries
   ;;  #'(lambda () (org-glance--get-outline-path-and-marker-at-point
-  ;;           separator outline-path-ignore filter-predicates)))
+  ;;           separator outline-ignore filter-predicates)))
   )
 
 (defun org-glance--handle-entry (handler)
@@ -204,17 +230,16 @@ Add some FILTERS to filter unwanted entries."
   "PROMPT org-completing-read on ENTRIES and call ACTION on selected.
 If there is only one entry, call ACTION without completing read.
 If there are no entries, raise exception."
-  (let* ((entries (remove 'nil entries))
-         (entries-count (length entries))
+  (let* ((entries-count (length entries))
          (choice (cond ((= entries-count 1) (caar entries))
                        ((= entries-count 0) (error "Empty set."))
                        (t (org-completing-read prompt entries))))
-         (marker (cdr (assoc-string choice entries)))
+         (marker (cadr (assoc-string choice entries)))
          (source-buffer (current-buffer)))
 
     ;; og-context debug
-    (let ((context (og-context :target choice)))
-      (eieio-persistent-save context))
+    ;; (let ((context (og-context :target choice)))
+    ;;   (eieio-persistent-save context))
     ;; debug end
 
     (if save-outline-visibility-p

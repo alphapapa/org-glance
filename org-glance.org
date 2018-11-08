@@ -163,7 +163,7 @@ the file returning the result of evaluating BODY."
   - if entry has an org-link in title, browse it
   - if entry has HANDLER property, read-eval it
 - HANDLER :: property name to read-eval on select (default: \"HANDLER\")
-- OUTLINE-PATH-IGNORE :: list of strings to ignore in outline-path
+- OUTLINE-IGNORE :: list of strings to ignore in outline-path
 
 - INPLACE :: do not build scope file if specified
 
@@ -174,7 +174,7 @@ the file returning the result of evaluating BODY."
          (user-filter (or (plist-get args :filter)       (lambda () t)))
          (filters (org-glance--filter-predicates user-filter))
 
-         (outline-path-ignore (or (plist-get args :outline-path-ignore) nil))
+         (outline-ignore (or (plist-get args :outline-ignore) nil))
 
          ;; user predicates
          (save-outline-visibility-p (or (plist-get args :save-outline-visibility-p) nil))
@@ -188,7 +188,7 @@ the file returning the result of evaluating BODY."
          (entries (org-glance--entries
                    :scope aggregated-scopes
                    :separator separator
-                   :outline-path-ignore outline-path-ignore
+                   :outline-ignore outline-ignore
                    :filters filters
                    :inplace inplace-p))
          (-> (assert entries nil (format "Nothing to glance for in scopes %s" (prin1-to-string aggregated-scopes)))))
@@ -211,28 +211,29 @@ the file returning the result of evaluating BODY."
   "Return outline path of current `'org-mode`' entry.
 
 Org node titles separated by SEPARATOR, titles specified in
-OUTLINE-PATH-IGNORE will be ignored.
+OUTLINE-IGNORE will be ignored.
 
 All FILTERS lambdas must be t."
   (let* ((separator           (or (plist-get args :separator)           org-glance-defaults--separator))
-         (outline-path-ignore (or (plist-get args :outline-path-ignore) nil))
+         (outline-ignore (or (plist-get args :outline-ignore) nil))
          (filters             (or (plist-get args :filters)             nil))
 
          (mark (point-marker))
          (item (org-entry-get (point-marker) "ITEM"))
+
          (outline (cl-set-difference
-                   (butlast (org-get-outline-path t))
-                   outline-path-ignore
-                   :test 'string=))
-         (item-outline (-snoc outline item))
-         (title (mapconcat 'identity item-outline separator)))
+                   (append (butlast (org-get-outline-path t)) (list item))
+                   outline-ignore :test 'string=))
+
+         ;; (item-outline (-snoc outline item))
+         (title (mapconcat 'identity outline separator)))
     (when (cl-every (lambda (fp) (if fp (funcall fp) nil)) filters)
       (list title mark))))
 
 (defun org-glance--entries (&rest args)
   "Return glance entries by SCOPE.
 
-Specify SEPARATOR and OUTLINE-PATH-IGNORE to customize
+Specify SEPARATOR and OUTLINE-IGNORE to customize
 outline-paths appearence.
 
 When INPLACE flag specified, do not modify *org-glance-scope* buffer.
@@ -243,12 +244,13 @@ Add some FILTERS to filter unwanted entries."
          (-> (assert (listp scope) nil "Scope must be instance of list."))
 
          (separator           (or (plist-get args :separator)           org-glance-defaults--separator))
-         (outline-path-ignore (or (plist-get args :outline-path-ignore) nil))
+         (outline-ignore      (or (plist-get args :outline-ignore)      nil))
          (inplace-p           (or (plist-get args :inplace)             nil))
          (filters             (or (plist-get args :filters)             nil))
 
          ;; Possible beautify and optimization: switch to opened buffer instead of finding file
          ;; (live-buffers (remove nil (mapcar 'buffer-file-name (buffer-list))))
+
          (scope-type-getter (lambda (file-or-buffer)
                               (cond ((and (stringp file-or-buffer) (file-exists-p file-or-buffer)) 'file)
                                     ((and (bufferp file-or-buffer) (buffer-file-name file-or-buffer) (file-exists-p (buffer-file-name file-or-buffer))) 'file-buffer)
@@ -263,28 +265,45 @@ Add some FILTERS to filter unwanted entries."
          (outliner (apply-partially
                     'org-glance--get-outline-path-and-marker-at-point
                     :separator separator
-                    :outline-path-ignore outline-path-ignore
+                    :outline-ignore outline-ignore
                     :filters filters))
 
          (implant (lambda (file-or-buffer scope-type)
                     ;; TODO: checkout if current entries already exist in org-glance-scope
+                    (with-current-buffer (get-buffer-create org-glance--scope-buffer-name)
+                      (org-mode)
 
-                    (let ((entries (with-temp-buffer
-                                     (org-mode)
-                                     (case scope-type
-                                       ('file (insert-file-contents file-or-buffer))
-                                       ('file-buffer (insert-file-contents (buffer-file-name file-or-buffer)))
-                                       ('buffer (insert-buffer-substring-no-properties file-or-buffer)))
-                                     (mapcar 'car (org-map-entries outliner))))
+                      (let* ((entries (with-temp-buffer
+                                        (org-mode)
+                                        (case scope-type
+                                          ('file (insert-file-contents file-or-buffer))
+                                          ('file-buffer (insert-file-contents (buffer-file-name file-or-buffer)))
+                                          ('buffer (insert-buffer-substring-no-properties file-or-buffer)))
+                                        (mapcar 'car (org-map-entries outliner))))
+                             (scope-name (funcall scope-name-getter file-or-buffer scope-type))
+                             (org-parse-tree (org-element-parse-buffer 'headline))
+                             (scope-trees (org-element-map org-parse-tree 'headline
+                                            (lambda (headline)
+                                              (and (= (org-element-property :level headline) 1)
+                                                   (string= (org-element-property :title headline) scope-name)
+                                                   (list
+                                                    (org-element-property :begin headline)
+                                                    (org-element-property :end headline)))))))
 
-                          (scope-name (funcall scope-name-getter file-or-buffer scope-type)))
-                      (with-current-buffer (get-buffer-create org-glance--scope-buffer-name)
-                        (org-mode)
-                        (loop for entry in entries
-                              initially (insert (format "* %s\n" scope-name))
-                              when entry
-                              do (insert (format " * %s\n" entry))
-                              finally (insert "\n"))))))
+                        (if scope-trees
+                            (loop for (begin end) in scope-trees
+                                  do (save-excursion
+                                       (goto-char begin)
+                                       (org-map-entries (lambda () (message (org-element-property :title (org-element-at-point)))) nil 'tree)))
+
+                          (loop for entry in entries
+                                for i from 0 to (length entries)
+                                initially (insert (format "* %s\n" scope-name))
+                                when entry do (progn
+                                                (if (< i 3)
+                                                    (org-insert-subheading nil)
+                                                  (org-insert-heading-respect-content))
+                                                (insert (format "%s\n" entry)))))))))
 
          (visitor (lambda (file-or-buffer scope-type)
                     (save-window-excursion
@@ -322,7 +341,7 @@ Add some FILTERS to filter unwanted entries."
 
   ;; (org-map-entries
   ;;  #'(lambda () (org-glance--get-outline-path-and-marker-at-point
-  ;;           separator outline-path-ignore filter-predicates)))
+  ;;           separator outline-ignore filter-predicates)))
   )
 #+END_SRC
 
