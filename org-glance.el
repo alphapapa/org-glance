@@ -108,15 +108,16 @@ OUTLINE-IGNORE will be ignored.
 
 All FILTERS lambdas must be t."
   (let* ((separator           (or (plist-get args :separator)           org-glance-defaults--separator))
-         (outline-ignore (or (plist-get args :outline-ignore) nil))
+         (outline-ignore      (or (plist-get args :outline-ignore)      nil))
          (filters             (or (plist-get args :filters)             nil))
+         (inplace-p           (or (plist-get args :inplace)             nil))
 
          (mark (point-marker))
          (item (org-entry-get (point-marker) "ITEM"))
+         (path (funcall (if inplace-p 'append 'cdr) (org-get-outline-path t)))
 
-         (outline (cl-set-difference
-                   (append (butlast (org-get-outline-path t)) (list item))
-                   outline-ignore :test 'string=))
+         (outline (cl-set-difference path outline-ignore
+                                     :test 'string=))
 
          (title (mapconcat 'identity outline separator)))
     (when (and (cl-every (lambda (fp) (if fp (funcall fp) nil)) filters)
@@ -199,7 +200,8 @@ Add some FILTERS to filter unwanted entries."
                     'org-glance--get-outline-path-and-marker-at-point
                     :separator separator
                     :outline-ignore outline-ignore
-                    :filters filters))
+                    :filters filters
+                    :inplace inplace-p))
 
          (implant (lambda (file-or-buffer scope-type)
                     (with-temp-file org-glance-cache-file
@@ -219,7 +221,9 @@ Add some FILTERS to filter unwanted entries."
                              (scope-name (funcall scope-name-getter file-or-buffer scope-type))
                              (cached-scope (org-glance-cache--get-scope scope-name)))
 
-                        (when (and (not cached-scope) (> (length entries) 0) (not (string= org-glance-cache-file scope-name)))
+                        (when (and (not cached-scope)
+                                   (> (length entries) 0)
+                                   (not (string= org-glance-cache-file scope-name)))
                           (org-glance-cache--add-scope scope-name entries)
                           (setq cached-scope (org-glance-cache--get-scope scope-name)))
 
