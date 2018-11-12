@@ -202,24 +202,24 @@ Add some FILTERS to filter unwanted entries."
                     :filters filters))
 
          (implant (lambda (file-or-buffer scope-type)
-                    ;;(with-current-buffer (get-buffer-create org-glance--scope-buffer-name)
                     (with-temp-file org-glance-cache-file
+                      (org-mode)
+
                       (when (file-exists-p org-glance-cache-file)
                         (insert-file-contents-literally org-glance-cache-file))
-
-                      (org-mode)
 
                       (let* ((entries (with-temp-buffer
                                         (org-mode)
                                         (org-glance-cache--insert-contents file-or-buffer scope-type)
-                                        (org-map-entries (lambda () (let* ((element (org-element-at-point))
-                                                                      (title (org-element-property :title element))
-                                                                      (level (org-element-property :level element)))
-                                                                      (list title level))))))
+                                        (org-map-entries
+                                         (lambda () (let* ((element (org-element-at-point))
+                                                      (title (org-element-property :title element))
+                                                      (level (org-element-property :level element)))
+                                                 (list title level))))))
                              (scope-name (funcall scope-name-getter file-or-buffer scope-type))
                              (cached-scope (org-glance-cache--get-scope scope-name)))
 
-                        (when (and (not cached-scope) (> (length entries) 0))
+                        (when (and (not cached-scope) (> (length entries) 0) (not (string= org-glance-cache-file scope-name)))
                           (org-glance-cache--add-scope scope-name entries)
                           (setq cached-scope (org-glance-cache--get-scope scope-name)))
 
