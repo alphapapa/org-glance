@@ -36,15 +36,14 @@
 (require 'seq)
 
 (defvar org-glance--scope-buffer-name "*org-glance-scope*")
-(setq org-glance--cache (make-hash-table :test 'equal))
+(defvar org-glance-cache-file-name "/tmp/org-glance-cache.org")
+(defvar org-glance-defaults--separator " → ")
 
 (defun buffer-mode (&optional buffer-or-name)
   "Returns the major mode associated with a buffer.
 If buffer-or-name is nil return current buffer's mode."
   (buffer-local-value 'major-mode
    (if buffer-or-name (get-buffer buffer-or-name) (current-buffer))))
-
-(defvar org-glance-defaults--separator " → ")
 
 (defun org-glance (&rest args)
   "Use optional ARGS to customize your glancing blows:
@@ -91,7 +90,7 @@ If buffer-or-name is nil return current buffer's mode."
                    :outline-ignore outline-ignore
                    :filters filters
                    :inplace inplace-p))
-         (-> (assert entries nil (format "Nothing to glance for in scopes %s" (prin1-to-string aggregated-scopes)))))
+         (-> (assert entries nil (format "Nothing to glance for %s" (prin1-to-string aggregated-scopes)))))
 
     (org-glance/compl-map prompt entries action save-outline-visibility-p)
     ;; (unwind-protect
@@ -203,7 +202,11 @@ Add some FILTERS to filter unwanted entries."
                     :filters filters))
 
          (implant (lambda (file-or-buffer scope-type)
-                    (with-current-buffer (get-buffer-create org-glance--scope-buffer-name)
+                    ;;(with-current-buffer (get-buffer-create org-glance--scope-buffer-name)
+                    (with-temp-file org-glance-cache-file
+                      (when (file-exists-p org-glance-cache-file)
+                        (insert-file-contents-literally org-glance-cache-file))
+
                       (org-mode)
 
                       (let* ((entries (with-temp-buffer
