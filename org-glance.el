@@ -82,7 +82,7 @@ If buffer-or-name is nil return current buffer's mode."
          (handler   (or (plist-get args :handler)        "HANDLER"))
          (prompt    (or (plist-get args :prompt)         "Glance: "))
          (separator (or (plist-get args :separator)      " → "))
-         (action    (or (plist-get args :action)         (lambda nil (org-glance--handle-entry handler))))
+         (action    (or (plist-get args :action)         'org-glance/follow-org-link-at-point))
 
          (entries (org-glance--entries
                    :scope aggregated-scopes
@@ -100,7 +100,7 @@ If buffer-or-name is nil return current buffer's mode."
     ;;     (kill-buffer)))
     ))
 
-(defun org-glance--get-outline-path-and-marker-at-point (&rest args)
+(defun org-glance--get-entry-coordinates (&rest args)
   "Return outline path of current `'org-mode`' entry.
 
 Org node titles separated by SEPARATOR, titles specified in
@@ -112,17 +112,14 @@ All FILTERS lambdas must be t."
          (filters             (or (plist-get args :filters)             nil))
          (inplace-p           (or (plist-get args :inplace)             nil))
 
-         (mark (point-marker))
-         (item (org-entry-get (point-marker) "ITEM"))
+         (point (point))
+         (item (org-entry-get point "ITEM"))
          (path (funcall (if inplace-p 'append 'cdr) (org-get-outline-path t)))
-
-         (outline (cl-set-difference path outline-ignore
-                                     :test 'string=))
-
+         (outline (cl-set-difference path outline-ignore :test 'string=))
          (title (mapconcat 'identity outline separator)))
     (when (and (cl-every (lambda (fp) (if fp (funcall fp) nil)) filters)
                (not (string-empty-p (s-trim title))))
-      (list title mark))))
+      (list title point))))
 
 (defun org-glance-cache--add-scope (scope-name entries)
   (loop for (title level) in entries
@@ -197,7 +194,7 @@ Add some FILTERS to filter unwanted entries."
                                 ('buffer (buffer-name file-or-buffer)))))
 
          (outliner (apply-partially
-                    'org-glance--get-outline-path-and-marker-at-point
+                    'org-glance--get-entry-coordinates
                     :separator separator
                     :outline-ignore outline-ignore
                     :filters filters
@@ -261,24 +258,17 @@ If there are no entries, raise exception."
          (choice (cond ((= entries-count 1) (caar entries))
                        ((= entries-count 0) (error "Empty set."))
                        (t (org-completing-read prompt entries))))
-         (marker (cadr (assoc-string choice entries)))
+         (point (cadr (assoc-string choice entries)))
          (source-buffer (current-buffer)))
 
-    ;; og-context debug
-    ;; (let ((context (og-context :target choice)))
-    ;;   (eieio-persistent-save context))
-    ;; debug end
-
-    (if save-outline-visibility-p
+    (save-window-excursion
+      (if save-outline-visibility-p
         (org-save-outline-visibility t
-          (org-goto-marker-or-bmk marker)
-
-          (ledna/set-property "CONTEXT" "hello")
-
+          (goto-char point)
           (funcall action))
       (progn
-        (org-goto-marker-or-bmk marker)
-        (funcall action)))))
+        (goto-char point)
+        (funcall action))))))
 
 (defun org-glance/follow-org-link-at-point ()
   "Browse org-link at point."
